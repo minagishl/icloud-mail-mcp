@@ -380,36 +380,93 @@ export class iCloudMailClient {
     return { messageId: info.messageId };
   }
 
-  async markAsRead(
-    _messageIds: string[],
-    mailbox: string = 'INBOX'
-  ): Promise<void> {
+  /**
+   * Resolves Message-ID header strings to IMAP sequence numbers.
+   * The mailbox must already be open when this method is called.
+   */
+  private resolveMessageIds(messageIds: string[]): Promise<number[]> {
     return new Promise((resolve, reject) => {
-      this.imap.openBox(mailbox, false, (err: Error) => {
+      this.imap.search(['ALL'], (err: Error, results: number[]) => {
         if (err) {
           reject(err);
           return;
         }
 
-        this.imap.search(['ALL'], (err: Error, results: number[]) => {
-          if (err) {
-            reject(err);
-            return;
-          }
+        if (!results || results.length === 0) {
+          resolve([]);
+          return;
+        }
 
-          if (!results || results.length === 0) {
+        const targetIds = new Set(messageIds);
+        const matchedSeqnos: number[] = [];
+
+        const fetch = this.imap.fetch(results, {
+          bodies: 'HEADER.FIELDS (MESSAGE-ID)',
+        });
+
+        fetch.on('message', (msg: ImapMessage, seqno: number) => {
+          let headerData = '';
+
+          msg.on('body', (stream: NodeJS.ReadableStream) => {
+            stream.on('data', (chunk: Buffer) => {
+              headerData += chunk.toString('utf8');
+            });
+          });
+
+          msg.once('end', () => {
+            const match = headerData.match(/Message-ID:\s*(<[^>]+>|[^\s]+)/i);
+            if (match) {
+              const mid = match[1].trim();
+              if (targetIds.has(mid)) {
+                matchedSeqnos.push(seqno);
+              }
+            }
+            // Fallback: check if seqno was passed directly as an ID
+            if (targetIds.has(`${seqno}`)) {
+              matchedSeqnos.push(seqno);
+            }
+          });
+        });
+
+        fetch.once('error', (fetchErr: Error) => {
+          reject(fetchErr);
+        });
+
+        fetch.once('end', () => {
+          resolve(matchedSeqnos);
+        });
+      });
+    });
+  }
+
+  async markAsRead(
+    messageIds: string[],
+    mailbox: string = 'INBOX'
+  ): Promise<void> {
+    return new Promise((resolve, reject) => {
+      this.imap.openBox(mailbox, false, async (err: Error) => {
+        if (err) {
+          reject(err);
+          return;
+        }
+
+        try {
+          const seqnos = await this.resolveMessageIds(messageIds);
+          if (seqnos.length === 0) {
             resolve();
             return;
           }
 
-          this.imap.addFlags(results, ['\\Seen'], (err: Error) => {
+          this.imap.addFlags(seqnos, ['\\Seen'], (err: Error) => {
             if (err) {
               reject(err);
               return;
             }
             resolve();
           });
-        });
+        } catch (e) {
+          reject(e);
+        }
       });
     });
   }
@@ -486,12 +543,12 @@ export class iCloudMailClient {
   }
 
   async moveMessages(
-    _messageIds: string[],
+    messageIds: string[],
     sourceMailbox: string,
     destinationMailbox: string
   ): Promise<{ status: string; message: string }> {
     return new Promise((resolve) => {
-      this.imap.openBox(sourceMailbox, false, (err: Error) => {
+      this.imap.openBox(sourceMailbox, false, async (err: Error) => {
         if (err) {
           resolve({
             status: 'error',
@@ -500,26 +557,18 @@ export class iCloudMailClient {
           return;
         }
 
-        // Search for all messages to get sequence numbers
-        this.imap.search(['ALL'], (err: Error, results: number[]) => {
-          if (err) {
+        try {
+          const seqnos = await this.resolveMessageIds(messageIds);
+
+          if (seqnos.length === 0) {
             resolve({
               status: 'error',
-              message: `Failed to search messages: ${err.message}`,
+              message: 'No matching messages found in source mailbox',
             });
             return;
           }
 
-          if (!results || results.length === 0) {
-            resolve({
-              status: 'error',
-              message: 'No messages found in source mailbox',
-            });
-            return;
-          }
-
-          // Use the sequence numbers for moving
-          this.imap.move(results, destinationMailbox, (err: Error) => {
+          this.imap.move(seqnos, destinationMailbox, (err: Error) => {
             if (err) {
               resolve({
                 status: 'error',
@@ -530,10 +579,15 @@ export class iCloudMailClient {
 
             resolve({
               status: 'success',
-              message: `Successfully moved ${results.length} messages from '${sourceMailbox}' to '${destinationMailbox}'`,
+              message: `Successfully moved ${seqnos.length} messages from '${sourceMailbox}' to '${destinationMailbox}'`,
             });
           });
-        });
+        } catch (e) {
+          resolve({
+            status: 'error',
+            message: `Failed to resolve message IDs: ${e instanceof Error ? e.message : String(e)}`,
+          });
+        }
       });
     });
   }
@@ -694,11 +748,11 @@ export class iCloudMailClient {
   }
 
   async deleteMessages(
-    _messageIds: string[],
+    messageIds: string[],
     mailbox: string = 'INBOX'
   ): Promise<{ status: string; message: string }> {
     return new Promise((resolve) => {
-      this.imap.openBox(mailbox, false, (err: Error) => {
+      this.imap.openBox(mailbox, false, async (err: Error) => {
         if (err) {
           resolve({
             status: 'error',
@@ -707,24 +761,18 @@ export class iCloudMailClient {
           return;
         }
 
-        this.imap.search(['ALL'], (err: Error, results: number[]) => {
-          if (err) {
+        try {
+          const seqnos = await this.resolveMessageIds(messageIds);
+
+          if (seqnos.length === 0) {
             resolve({
               status: 'error',
-              message: `Failed to search messages: ${err.message}`,
+              message: 'No matching messages found in mailbox',
             });
             return;
           }
 
-          if (!results || results.length === 0) {
-            resolve({
-              status: 'error',
-              message: 'No messages found in mailbox',
-            });
-            return;
-          }
-
-          this.imap.addFlags(results, ['\\Deleted'], (err: Error) => {
+          this.imap.addFlags(seqnos, ['\\Deleted'], (err: Error) => {
             if (err) {
               resolve({
                 status: 'error',
@@ -744,23 +792,28 @@ export class iCloudMailClient {
 
               resolve({
                 status: 'success',
-                message: `Successfully deleted ${results.length} messages from '${mailbox}'`,
+                message: `Successfully deleted ${seqnos.length} messages from '${mailbox}'`,
               });
             });
           });
-        });
+        } catch (e) {
+          resolve({
+            status: 'error',
+            message: `Failed to resolve message IDs: ${e instanceof Error ? e.message : String(e)}`,
+          });
+        }
       });
     });
   }
 
   async setFlags(
-    _messageIds: string[],
+    messageIds: string[],
     flags: string[],
     mailbox: string = 'INBOX',
     action: 'add' | 'remove' = 'add'
   ): Promise<{ status: string; message: string }> {
     return new Promise((resolve) => {
-      this.imap.openBox(mailbox, false, (err: Error) => {
+      this.imap.openBox(mailbox, false, async (err: Error) => {
         if (err) {
           resolve({
             status: 'error',
@@ -769,26 +822,20 @@ export class iCloudMailClient {
           return;
         }
 
-        this.imap.search(['ALL'], (err: Error, results: number[]) => {
-          if (err) {
-            resolve({
-              status: 'error',
-              message: `Failed to search messages: ${err.message}`,
-            });
-            return;
-          }
+        try {
+          const seqnos = await this.resolveMessageIds(messageIds);
 
-          if (!results || results.length === 0) {
+          if (seqnos.length === 0) {
             resolve({
               status: 'error',
-              message: 'No messages found in mailbox',
+              message: 'No matching messages found in mailbox',
             });
             return;
           }
 
           const flagOperation = action === 'add' ? 'addFlags' : 'delFlags';
 
-          this.imap[flagOperation](results, flags, (err: Error) => {
+          this.imap[flagOperation](seqnos, flags, (err: Error) => {
             if (err) {
               resolve({
                 status: 'error',
@@ -799,10 +846,15 @@ export class iCloudMailClient {
 
             resolve({
               status: 'success',
-              message: `Successfully ${action === 'add' ? 'added' : 'removed'} flags [${flags.join(', ')}] ${action === 'add' ? 'to' : 'from'} ${results.length} messages in '${mailbox}'`,
+              message: `Successfully ${action === 'add' ? 'added' : 'removed'} flags [${flags.join(', ')}] ${action === 'add' ? 'to' : 'from'} ${seqnos.length} messages in '${mailbox}'`,
             });
           });
-        });
+        } catch (e) {
+          resolve({
+            status: 'error',
+            message: `Failed to resolve message IDs: ${e instanceof Error ? e.message : String(e)}`,
+          });
+        }
       });
     });
   }
