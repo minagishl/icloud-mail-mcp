@@ -1,5 +1,40 @@
 # Changelog
 
+## v1.2.0 (2026-04-26)
+
+### Critical fixes (data integrity)
+
+The previous releases shipped four mutator methods (`mark_as_read`, `move_messages`, `delete_messages`, `set_flags`) that **silently ignored their `messageIds` parameter** and operated on every message in the target mailbox via an internal `search(['ALL'])` call. Combined with timeouts on large mailboxes, this could leave a destination folder full of duplicates while the source mailbox stayed unchanged. All four are fixed in this release.
+
+- **`move_messages`, `delete_messages`, `set_flags`, `mark_as_read`**: now operate only on the supplied UIDs. Empty `messageIds` is a no-op success; invalid UIDs return a structured `invalid_input` error.
+- **`move_messages` is now idempotent**: before moving, the destination is checked for matching `Message-ID` headers. Already-present messages are reported as `skipped` rather than copied again.
+- **`get_mailboxes`**: returns a flat array (`{ path, name, delimiter, flags, specialUse }`). The previous version returned a tree with cyclic `parent`/`children` references that crashed `JSON.stringify` on any nested folder structure.
+- **New tool `get_mailbox_stats`**: returns `{ total, unread, recent }` for any mailbox so callers can ground themselves on inbox size before designing rules.
+
+### Breaking changes
+
+- **`EmailMessage.id` is now an IMAP UID (string)**, not the RFC822 `Message-ID` header. The new `rfc822MessageId` field carries the old value when available, and a typed `uid: number` field is also exposed. Any caller that cached pre-1.2 IDs must re-fetch.
+- **`get_mailboxes` shape changed** from a nested object tree to a flat array of `MailboxInfo`.
+- **Mutator return shapes changed** to expose `affected`/`moved`/`skipped`/`deleted` counts and optional `skippedDetails` / `wouldAffect` previews.
+- **`IcloudMailError` is now returned as a successful tool response with `status: 'error'` and a structured `error` payload**, instead of being thrown as `MCP error -32603`. Callers that branched on `error.code === -32603` need to inspect `result.error.kind` instead. `McpError` is still thrown for protocol-level problems (missing config, invalid params, unknown tool).
+
+### New behavior
+
+- **Persistent connection with auto-reconnect**. Every tool call goes through `ensureConnected()`, which re-authenticates if the IMAP socket dropped. Removes the brittle "call `check_config` between operations" workaround.
+- **`metadataOnly` / `bodyPreview`** options on `get_messages` and `search_messages`. `metadataOnly` skips body and attachment parsing entirely (envelope + flags only); `bodyPreview` truncates the body and omits attachments.
+- **`dryRun`** option on `move_messages` and `delete_messages` returns previews of affected messages without performing the mutation.
+- **Structured errors**. `IcloudMailError` instances expose `kind` (`auth | network | rate_limit | not_found | invalid_input | server`) and `retryable` so callers can act intelligently on failures.
+- **`check_config`** now actively probes the connection (via `ensureConnected()`) rather than reflecting a stale flag.
+
+### Internal
+
+- **Library swap**: `imap@0.8.19` (unmaintained since 2021) replaced with `imapflow@1.3.x`. UID-first by default; native `messageMove` / `messageDelete` / `messageFlagsAdd` / `messageFlagsRemove`.
+- **Tests rewritten** against `imapflow`'s surface. New cases assert that mutators are called with the supplied UIDs and never invoke a whole-mailbox range — these would have caught the entire pre-1.2 bug family.
+
+**Full Changelog**: https://github.com/minagishl/icloud-mail-mcp/compare/v1.1.1...v1.2.0
+
+---
+
 ## v1.1.1 (2025-08-17)
 
 ### Testing Infrastructure

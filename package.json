@@ -1,6 +1,6 @@
 {
   "name": "icloud-mail-mcp",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "Model Context Protocol server for iCloud Mail management and email operations",
   "type": "module",
   "main": "dist/index.js",
@@ -35,13 +35,12 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.17.2",
-    "imap": "^0.8.19",
+    "imapflow": "^1.3.2",
     "mailparser": "^3.7.4",
     "nodemailer": "^7.0.5"
   },
   "devDependencies": {
     "@eslint/js": "^9.33.0",
-    "@types/imap": "^0.8.42",
     "@types/mailparser": "^3.4.6",
     "@types/node": "^24.2.1",
     "@types/nodemailer": "^6.4.17",
