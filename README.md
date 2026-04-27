@@ -58,6 +58,10 @@ Add to your MCP server configuration:
 
 ## Available Tools
 
+> **v1.3.0 (current)** — auto-recovery from the `"Can not re-use ImapFlow instance"` wedge that previously required manual restart, plus count verification on moves/deletes and partial-progress reporting on `auto_organize`. See [docs/CHANGELOG.md](docs/CHANGELOG.md).
+>
+> **v1.2.0 — breaking change**: `messageId` values are **IMAP UIDs as strings** (e.g. `"12345"`), not RFC822 `Message-ID` headers. The header value is still returned in the new `rfc822MessageId` field on `EmailMessage`.
+
 <details>
 <summary><strong>Click to view all available tools</strong></summary>
 
@@ -65,13 +69,15 @@ Add to your MCP server configuration:
 
 #### `get_messages`
 
-Retrieve email messages from a specified mailbox.
+Retrieve email messages from a specified mailbox. Returns IMAP UIDs as `id`.
 
 **Parameters:**
 
 - `mailbox` (string, optional): Mailbox name (default: "INBOX")
 - `limit` (number, optional): Maximum number of messages to retrieve (default: 10)
 - `unreadOnly` (boolean, optional): Retrieve only unread messages (default: false)
+- `metadataOnly` (boolean, optional): Skip body and attachment parsing (default: false). Drops a 50-message response from ~670KB to <50KB.
+- `bodyPreview` (number, optional): Truncate body to this many characters and omit attachments.
 
 #### `send_email`
 
@@ -86,22 +92,24 @@ Send an email through iCloud Mail.
 
 #### `mark_as_read`
 
-Mark email messages as read.
+Mark email messages as read by IMAP UID.
 
 **Parameters:**
 
-- `messageIds` (array, required): Array of message IDs to mark as read
+- `messageIds` (array of UIDs as strings, required): IMAP UIDs to mark as read.
 - `mailbox` (string, optional): Mailbox name (default: "INBOX")
 
 #### `move_messages`
 
-Move messages between mailboxes.
+Move messages between mailboxes by IMAP UID. **Idempotent**: messages whose `Message-ID` already exists in the destination are skipped, not duplicated. **Returns count verification** by default — captures source and destination totals before/after the move and surfaces a `countWarning` if the deltas differ from the expected count by more than 5 (tolerance for arriving mail).
 
 **Parameters:**
 
-- `messageIds` (array, required): Array of message IDs to move
+- `messageIds` (array of UIDs as strings, required): IMAP UIDs to move.
 - `sourceMailbox` (string, required): Source mailbox name
 - `destinationMailbox` (string, required): Destination mailbox name
+- `dryRun` (boolean, optional): If true, return previews of messages that would be moved without performing the move.
+- `verifyCounts` (boolean, optional, default true): Capture source/dest totals before/after and surface drift in the response. Disable when chaining many moves to save 4 STATUS round-trips per call.
 
 #### `search_messages`
 
@@ -109,53 +117,61 @@ Search for messages using various criteria.
 
 **Parameters:**
 
-- `query` (string, optional): Search query text (searches in subject, from, body)
+- `query` (string, optional): Search query text (matches subject or body)
 - `mailbox` (string, optional): Mailbox name (default: "INBOX")
 - `limit` (number, optional): Maximum number of messages to retrieve (default: 10)
 - `dateFrom` (string, optional): Start date for search (YYYY-MM-DD format)
 - `dateTo` (string, optional): End date for search (YYYY-MM-DD format)
 - `fromEmail` (string, optional): Filter by sender email address
 - `unreadOnly` (boolean, optional): Search only unread messages (default: false)
+- `metadataOnly` (boolean, optional): Envelope and flags only (default: false).
+- `bodyPreview` (number, optional): Truncate body and omit attachments.
 
 #### `delete_messages`
 
-Delete messages from a mailbox.
+Delete messages from a mailbox by IMAP UID. **Returns count verification** by default (same shape as `move_messages`, source-only).
 
 **Parameters:**
 
-- `messageIds` (array, required): Array of message IDs to delete
+- `messageIds` (array of UIDs as strings, required): IMAP UIDs to delete.
 - `mailbox` (string, optional): Mailbox name (default: "INBOX")
+- `dryRun` (boolean, optional): If true, return previews of messages that would be deleted without performing the delete.
+- `verifyCounts` (boolean, optional, default true): Capture mailbox total before/after and surface drift in the response.
 
 #### `set_flags`
 
-Set flags on messages (read, unread, flagged, etc.).
+Set flags on messages by IMAP UID (read, unread, flagged, etc.).
 
 **Parameters:**
 
-- `messageIds` (array, required): Array of message IDs to set flags on
+- `messageIds` (array of UIDs as strings, required): IMAP UIDs to flag.
 - `flags` (array, required): Array of flags to set (e.g., ["\\Seen", "\\Flagged"])
 - `mailbox` (string, optional): Mailbox name (default: "INBOX")
 - `action` (string, optional): Whether to "add" or "remove" the flags (default: "add")
 
 #### `download_attachment`
 
-Download an attachment from a specific message.
+Download an attachment from a specific message by IMAP UID.
 
 **Parameters:**
 
-- `messageId` (string, required): Message ID containing the attachment
+- `messageId` (string, required): IMAP UID containing the attachment.
 - `attachmentIndex` (number, optional): Index of the attachment to download (0-based, default: 0)
 - `mailbox` (string, optional): Mailbox name (default: "INBOX")
 
 #### `auto_organize`
 
-Automatically organize emails based on rules (sender, subject keywords, etc.).
+Automatically organize emails based on rules (sender, subject keywords, etc.). Each rule result includes a `ruleStatus` of `"completed" | "pending" | "failed"`. When the time budget is exhausted before all rules run, remaining rules are returned with `ruleStatus: "pending"` and full `messages` arrays so callers can chain a follow-up call with just the pending rules.
 
 **Parameters:**
 
 - `rules` (array, required): Array of organization rules with conditions and actions
 - `sourceMailbox` (string, optional): Source mailbox to organize (default: "INBOX")
 - `dryRun` (boolean, optional): If true, only shows what would be organized without moving emails (default: false)
+- `maxMessages` (number, optional, default 100): Maximum number of recent messages to consider from `sourceMailbox`. For larger sets, use `search_messages` + `move_messages` with explicit UIDs.
+- `timeBudgetMs` (number, optional, default 50000): Wall-clock budget. When exhausted, remaining rules are returned with `ruleStatus: "pending"` instead of being silently dropped at the MCP-client timeout.
+
+**Returns:** `{ status, message, results, progress: { rulesTotal, rulesCompleted, rulesPending, rulesFailed, durationMs, stoppedReason? } }`.
 
 **Rule Structure:**
 
@@ -176,9 +192,19 @@ Automatically organize emails based on rules (sender, subject keywords, etc.).
 
 #### `get_mailboxes`
 
-List all available mailboxes in your iCloud Mail account.
+List all available mailboxes as a flat array (`{ path, name, delimiter, flags, specialUse }`). Replaces the previous nested tree, which produced cyclic references and crashed `JSON.stringify` on any nested folder structure.
 
 **Parameters:** None
+
+#### `get_mailbox_stats`
+
+Return total / unread / recent counts for a mailbox. Use this **before designing cleanup rules** to ground the agent on inbox size — agents have miscalibrated rule scope when this primitive was unavailable.
+
+**Parameters:**
+
+- `mailbox` (string, optional): Mailbox name (default: "INBOX")
+
+**Returns:** `{ mailbox, total, unread, recent }`
 
 #### `create_mailbox`
 
@@ -262,16 +288,39 @@ pnpm run start
 }
 ```
 
-**Move messages between mailboxes:**
+**Move messages between mailboxes (UIDs as strings):**
 
 ```json
 {
   "tool": "move_messages",
   "arguments": {
-    "messageIds": ["message-id-1", "message-id-2"],
+    "messageIds": ["12345", "12346"],
     "sourceMailbox": "INBOX",
     "destinationMailbox": "My Custom Folder"
   }
+}
+```
+
+**Preview before mutating (`dryRun`):**
+
+```json
+{
+  "tool": "move_messages",
+  "arguments": {
+    "messageIds": ["12345"],
+    "sourceMailbox": "INBOX",
+    "destinationMailbox": "Archive",
+    "dryRun": true
+  }
+}
+```
+
+**Calibrate inbox size before cleanup:**
+
+```json
+{
+  "tool": "get_mailbox_stats",
+  "arguments": { "mailbox": "INBOX" }
 }
 ```
 
@@ -356,17 +405,23 @@ This project includes comprehensive test coverage using Vitest. The test suite c
 
 ### Test Structure
 
-- **Total Tests**: 29 tests across 3 test files
+- **Total Tests**: 43 tests across 3 test files
 - **Framework**: Vitest with TypeScript support
-- **Coverage**: Core functionality, type definitions, and configuration
+- **Coverage**: Core mutator behavior, idempotency, reconnection, and error mapping
 
 ### Test Categories
 
 #### 1. Core Client Tests (`src/lib/icloud-mail-client.test.ts`)
 
-- **Constructor validation**: Tests client creation with various configurations
-- **Email name extraction**: Tests handling of different email formats
-- **Basic functionality**: Tests core client behavior and configuration validation
+- **Mutator UID assertions**: Verifies `move_messages`, `delete_messages`, `set_flags`, `mark_as_read` operate only on supplied UIDs and never invoke a whole-mailbox range. This catches the entire family of pre-1.2 data-destruction bugs.
+- **Empty-array safety**: Calling any mutator with `[]` is a no-op success, not a wipe.
+- **`move_messages` idempotency**: Messages whose `Message-ID` already exists in the destination are skipped, not duplicated.
+- **`dryRun` previews**: Returns `wouldAffect` without mutating.
+- **`get_mailboxes` flat output**: Round-trips through `JSON.stringify` cleanly.
+- **`getMailboxStats`**: Returns `{ total, unread, recent }` shape.
+- **`ensureConnected`**: Reconnects when the IMAP socket has dropped.
+- **`metadataOnly`**: Skips body fetch and parsing.
+- **Error mapping**: AUTHENTICATIONFAILED → `kind: 'auth'`, timeout → `kind: 'network', retryable: true`, non-numeric UID → `kind: 'invalid_input'`.
 
 #### 2. Type Definition Tests (`src/types/config.test.ts`)
 

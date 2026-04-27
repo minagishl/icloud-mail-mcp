@@ -41,6 +41,9 @@ describe('Config Types', () => {
     it('should create valid email message', () => {
       const message: EmailMessage = {
         id: '123',
+        uid: 123,
+        rfc822MessageId: '<abc@example.com>',
+        mailbox: 'INBOX',
         from: 'sender@example.com',
         to: ['recipient@example.com'],
         subject: 'Test Subject',
@@ -50,6 +53,9 @@ describe('Config Types', () => {
       };
 
       expect(message.id).toBe('123');
+      expect(message.uid).toBe(123);
+      expect(message.rfc822MessageId).toBe('<abc@example.com>');
+      expect(message.mailbox).toBe('INBOX');
       expect(message.from).toBe('sender@example.com');
       expect(message.to).toEqual(['recipient@example.com']);
       expect(message.subject).toBe('Test Subject');
@@ -67,6 +73,8 @@ describe('Config Types', () => {
 
       const message: EmailMessage = {
         id: '123',
+        uid: 123,
+        mailbox: 'INBOX',
         from: 'sender@example.com',
         to: ['recipient@example.com'],
         subject: 'Test Subject',

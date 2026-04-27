@@ -38,7 +38,7 @@ async function buildBundle() {
       format: 'esm',
       outfile: path.join(projectRoot, 'dist/index.js'),
       external: [
-        'imap',
+        'imapflow',
         'mailparser',
         'nodemailer',
         'zod',
