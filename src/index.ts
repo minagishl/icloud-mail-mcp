@@ -387,6 +387,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
   try {
+    // The IMAP session can drop between calls (idle timeout, network change,
+    // or the old testConnection disconnect), so re-establish it on demand.
+    if (
+      mailClient &&
+      !['send_email', 'test_connection', 'check_config'].includes(name)
+    ) {
+      await mailClient.ensureConnected();
+    }
+
     switch (name) {
       case 'get_messages': {
         if (!mailClient) {
